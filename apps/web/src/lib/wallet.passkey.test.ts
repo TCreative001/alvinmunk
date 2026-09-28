@@ -182,10 +182,13 @@ beforeEach(() => {
   mocks.createWallet.mockReset();
   mocks.connectWallet
     .mockReset()
-    .mockImplementation(async (opts: { keyId: string; getContractId: () => Promise<string> }) => ({
-      keyIdBase64: opts.keyId,
-      contractId: await opts.getContractId(),
-    }));
+    .mockImplementation(
+      async (opts: { keyId?: string; getContractId?: () => Promise<string | undefined> } = {}) => ({
+        // A discovery call (restore: no keyId) returns the synced credential the OS holds.
+        keyIdBase64: opts.keyId ?? KEY_ID,
+        contractId: (await opts.getContractId?.()) ?? CONTRACT_ID,
+      }),
+    );
   mocks.deploy.mockReset().mockImplementation(async () => {
     const at = {
       result: { options: { contractId: CONTRACT_ID } },
@@ -211,7 +214,7 @@ describe('connectPasskey — first run and returning user', () => {
   it('enrolls once, deploys the passkey-kit wallet, and keeps only the key id + contract id', async () => {
     fetchMock.mockResolvedValueOnce(relayerOk('HASH-1'));
 
-    const wallet = await connectPasskey();
+    const wallet = await connectPasskey({ mode: 'create' });
 
     expect(mocks.createKey).toHaveBeenCalledTimes(1);
     expect(mocks.createWallet).not.toHaveBeenCalled();
@@ -266,12 +269,53 @@ describe('connectPasskey — first run and returning user', () => {
   });
 });
 
+describe('connectPasskey — restore an existing account (new device)', () => {
+  it('recovers the wallet from a discoverable passkey and caches its key id + contract id', async () => {
+    // Fresh browser: localStorage is empty, but the passkey is synced/discoverable.
+    const wallet = await connectPasskey(); // default mode is 'restore'
+
+    // The whole point: restore NEVER enrols or deploys — it finds the existing wallet.
+    expect(mocks.createKey).not.toHaveBeenCalled();
+    expect(mocks.deploy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    // connectWallet is called WITHOUT a keyId, which is what triggers the discovery ceremony.
+    expect(mocks.connectWallet).toHaveBeenCalledTimes(1);
+    expect(mocks.connectWallet.mock.calls[0][0]?.keyId).toBeUndefined();
+    expect(wallet.kind).toBe('passkey');
+    expect(wallet.address).toBe(CONTRACT_ID);
+    // The discovered ids are cached for a fast, ceremony-free connect next time.
+    expect(stored()).toEqual({ [KEYID_KEY]: KEY_ID, [CONTRACT_KEY]: CONTRACT_ID });
+  });
+
+  it('reuses the cached credential on the next connect (no second discovery ceremony)', async () => {
+    await connectPasskey(); // discovery + cache
+    mocks.connectWallet.mockClear();
+
+    const wallet = await connectPasskey();
+
+    expect(mocks.connectWallet).toHaveBeenCalledWith(expect.objectContaining({ keyId: KEY_ID }));
+    expect(mocks.createKey).not.toHaveBeenCalled();
+    expect(wallet.address).toBe(CONTRACT_ID);
+  });
+
+  it('reports a clear error and never enrols when no wallet is found in restore mode', async () => {
+    mocks.connectWallet.mockRejectedValueOnce(new Error('Failed to connect wallet'));
+
+    await expect(connectPasskey({ mode: 'restore' })).rejects.toThrow(
+      /couldn't find an account for that passkey/i,
+    );
+    expect(mocks.createKey).not.toHaveBeenCalled();
+    expect(mocks.deploy).not.toHaveBeenCalled();
+    expect(stored()).toEqual({});
+  });
+});
+
 describe('connectPasskey deploy resilience (#186)', () => {
   it('reuses the first passkey when the relayer rejects the deploy — no second enrollment', async () => {
     // 1st attempt: the passkey is created, the deploy is built and submitted, the relayer rejects.
     fetchMock.mockResolvedValueOnce(relayerFail('relayer unavailable'));
 
-    const err = await connectPasskey().catch((e: unknown) => e);
+    const err = await connectPasskey({ mode: 'create' }).catch((e: unknown) => e);
 
     // The user is told a retry will reuse their passkey (and why it failed).
     expect(err).toBeInstanceOf(Error);
@@ -308,7 +352,7 @@ describe('connectPasskey deploy resilience (#186)', () => {
     fetchMock.mockResolvedValueOnce(relayerOk('HASH-1'));
     mocks.getTransaction.mockResolvedValue({ status: 'NOT_FOUND' });
 
-    const first = connectPasskey();
+    const first = connectPasskey({ mode: 'create' });
     const rejected = expect(first).rejects.toThrow(/passkey is saved.*not confirmed in time/);
     await vi.advanceTimersByTimeAsync(70_000);
     await rejected;
@@ -339,7 +383,7 @@ describe('connectPasskey deploy resilience (#186)', () => {
     arrange();
     mocks.getLedgerEntries.mockResolvedValue(contractPresent);
 
-    const wallet = await connectPasskey();
+    const wallet = await connectPasskey({ mode: 'create' });
 
     expect(mocks.createKey).toHaveBeenCalledTimes(1);
     expect(mocks.deploy).toHaveBeenCalledTimes(1);
@@ -370,7 +414,7 @@ describe('connectPasskey deploy resilience (#186)', () => {
     seedPendingRecord({ [CONTRACT_KEY]: OTHER_CONTRACT_ID, ...corruption });
     fetchMock.mockResolvedValueOnce(relayerOk('HASH-1'));
 
-    const wallet = await connectPasskey();
+    const wallet = await connectPasskey({ mode: 'create' });
 
     // Nothing to resume, so the user gets a working wallet instead of a dead end.
     expect(mocks.createKey).toHaveBeenCalledTimes(1);
@@ -387,7 +431,7 @@ describe('connectPasskey deploy resilience (#186)', () => {
     mocks.getLedgerEntries.mockResolvedValue(contractPresent);
     mocks.deploy.mockRejectedValueOnce(new Error('simulation failed'));
 
-    const err = await connectPasskey().catch((e: unknown) => e);
+    const err = await connectPasskey({ mode: 'create' }).catch((e: unknown) => e);
 
     expect(humanizeError(err)).toMatch(/passkey is saved\. \(simulation failed\)/);
     // The failed deploy is not mistaken for "landed" on the strength of the other wallet.

@@ -94,6 +94,11 @@
   "onboard.app.errShort": "Pick a handle — 3+ letters or numbers.",
   "onboard.app.errTaken": "@{handle} is taken — pick another.",
   "onboard.app.success": "Your profile is live — @{handle} stamped on-chain.",
+  "onboard.app.or": "or",
+  "onboard.app.restore": "I already have an account",
+  "onboard.app.restoring": "Looking for your account…",
+  "onboard.app.restoreSuccess": "Welcome back — @{handle}.",
+  "onboard.app.restoreNotFound": "We found your wallet, but it has no handle yet. Pick one to finish.",
 
   "appHome.whatNow": "What now",
   "appHome.recentActivity": "Recent activity",

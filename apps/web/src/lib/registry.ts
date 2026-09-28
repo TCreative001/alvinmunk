@@ -6,7 +6,7 @@
 import { invokeAndWait, readPublic, args, registryId } from './contracts';
 import type { Wallet } from './wallet';
 import { encodeAvatar, decodeAvatar, type AvatarConfig } from './avatar';
-import { sanitizeBio } from './profile';
+import { loadProfile, saveProfile, sanitizeBio, type Profile } from './profile';
 import { shareInFlight } from './utils';
 
 /** Resolve `@handle` → address (public, wallet-free). null if unclaimed/unconfigured. */
@@ -25,6 +25,34 @@ export async function reverseHandle(address: string): Promise<string | null> {
     () => null,
   );
   return v ?? null;
+}
+
+/**
+ * Rebuild + persist the local Profile for an address that already holds a handle on-chain,
+ * then return it. null when the address has no handle yet (the caller must run handle
+ * creation).
+ *
+ * The registry is the source of truth for a returning user whose localStorage is empty — a
+ * new phone, a second browser, or after clearing site data. Without this, a recovered passkey
+ * would be asked to claim a handle that would RENAME the account it already owns.
+ */
+export async function adoptOnChainProfile(address: string): Promise<Profile | null> {
+  if (!address) return null;
+  const handle = await reverseHandle(address);
+  if (!handle) return null;
+  const local = loadProfile();
+  const same = local?.address === address ? local : null;
+  const profile: Profile = {
+    handle,
+    address,
+    createdAt: same?.createdAt ?? Date.now(),
+    // Keep anything this device already knows for the SAME wallet (avatar/bio/genesis).
+    genesisTx: same?.genesisTx,
+    avatar: same?.avatar,
+    bio: same?.bio,
+  };
+  saveProfile(profile);
+  return profile;
 }
 
 /** Most addresses per `reverse_many` call; mirrors `REVERSE_MANY_CAP` in the contract. */

@@ -31,6 +31,21 @@ import { config, networkPassphrase, waitForAccountReady, server } from './stella
 
 export type WalletKind = 'passkey' | 'dev' | 'freighter' | 'albedo' | 'kit';
 
+/**
+ * How a connect should resolve the account.
+ *
+ *  - `'restore'` (default): connect to an EXISTING account and never deploy a new one. For a
+ *    passkey that means reusing a stored key id, or — when none is stored (new phone, second
+ *    browser, cleared site data) — asking the OS for any discoverable passkey and re-deriving
+ *    the contract id on-chain. This is the account-recovery path.
+ *  - `'create'`: explicitly enroll a NEW passkey and deploy a new smart wallet. Only used
+ *    after the user picks "create a new account", so a returning user is never silently given
+ *    a fresh, empty identity.
+ */
+export interface ConnectOptions {
+  mode?: 'restore' | 'create';
+}
+
 export interface Wallet {
   kind: WalletKind;
   address: string;
@@ -86,18 +101,24 @@ export function isPasskeyConfigured(): boolean {
 }
 
 /** Pick the right provider. Passkey when configured; dev otherwise (testnet only). */
-export async function getWallet(): Promise<Wallet> {
-  if (isPasskeyConfigured()) return connectPasskey();
-  return getDevWallet();
+export async function getWallet(opts: ConnectOptions = {}): Promise<Wallet> {
+  if (isPasskeyConfigured()) return connectPasskey(opts);
+  return getDevWallet(opts);
 }
 
 // ── Dev provider (testnet only) ──
 
-export async function getDevWallet(): Promise<Wallet> {
+export async function getDevWallet(opts: ConnectOptions = {}): Promise<Wallet> {
   if (config.network === 'mainnet') {
     throw new Error('Dev wallet is disabled on mainnet — passkey infra is required.');
   }
   const existing = safeLocalGet(DEV_SECRET_KEY);
+  // "Restore" means connect to an account that already exists. With no dev key saved on this
+  // device there is nothing to restore, so don't silently mint a new identity (a fresh browser
+  // must not look like a brand-new user).
+  if (!existing && opts.mode === 'restore') {
+    throw new Error('No account found on this device — create a new one to get started.');
+  }
   const kp = existing ? Keypair.fromSecret(existing) : Keypair.random();
 
   if (!existing) {
@@ -443,7 +464,8 @@ function clearPasskeyRecord(): void {
   for (const k of [PK_PENDING, PK_KEYID, PK_PUBKEY, PK_CONTRACT]) safeLocalRemove(k);
 }
 
-export async function connectPasskey(): Promise<Wallet> {
+export async function connectPasskey(opts: ConnectOptions = {}): Promise<Wallet> {
+  const mode = opts.mode ?? 'restore';
   const wasmHash = process.env.NEXT_PUBLIC_PASSKEY_WALLET_WASM_HASH;
   if (!wasmHash) {
     throw new Error(
@@ -469,9 +491,9 @@ export async function connectPasskey(): Promise<Wallet> {
   });
 
   // Returning user → re-derive the wallet from the stored credential (no Mercury needed: the
-  // contract id derives on-chain from the keyId; the cached id is a fallback). First run →
-  // FaceID/passkey enroll, then persist + deploy + CONFIRM via the relayer before returning —
-  // otherwise the next call would hit an undeployed C… account.
+  // contract id derives on-chain from the keyId; the cached id is a fallback). New device with
+  // no stored key id → 'restore' runs a discovery assertion for any synced passkey and caches
+  // what it finds (below). Only an explicit 'create' enrolls + deploys.
   //
   // Enrollment and deploy are deliberately SPLIT. `kit.createWallet` does both in one call and
   // stores nothing in between, so a relayer/confirm failure orphans a passkey the OS has already
@@ -485,12 +507,12 @@ export async function connectPasskey(): Promise<Wallet> {
     storedKeyId = null;
   }
 
-  let keyId: string;
-  if (storedKeyId) {
-    keyId = storedKeyId;
-  } else {
-    // First run: enroll, then persist key id + public key + the pendingDeploy marker BEFORE we
-    // submit anything, so any failure past this point is recoverable with the same passkey.
+  let keyId: string | undefined = storedKeyId ?? undefined;
+
+  if (!keyId && mode === 'create') {
+    // Explicit "create a new account": enroll, then persist key id + public key + the
+    // pendingDeploy marker BEFORE we submit anything, so any failure past this point is
+    // recoverable with the same passkey.
     const created = await kit.createKey('alvinmunk', 'alvinmunk');
     keyId = created.keyIdBase64;
     const publicKeyB64 = u8ToB64(created.publicKey);
@@ -504,11 +526,29 @@ export async function connectPasskey(): Promise<Wallet> {
   }
 
   // Derive + verify the wallet from the (possibly just-deployed) credential. This also wires the
-  // kit's contract client so `invoke` below can sign with the passkey.
-  const res = await kit.connectWallet({
-    keyId,
-    getContractId: async () => safeLocalGet(PK_CONTRACT) ?? undefined,
-  });
+  // kit's contract client so `invoke` below can sign with the passkey. With no key id (restore
+  // on a new device) `connectWallet()` runs a WebAuthn assertion for ANY discoverable passkey
+  // and re-derives the contract id on-chain — the account-recovery path.
+  let res!: Awaited<ReturnType<typeof kit.connectWallet>>;
+  if (keyId) {
+    res = await kit.connectWallet({
+      keyId,
+      getContractId: async () => safeLocalGet(PK_CONTRACT) ?? undefined,
+    });
+  } else {
+    try {
+      res = await kit.connectWallet({ getContractId: async () => undefined });
+    } catch (e) {
+      throw new Error(
+        "We couldn't find an account for that passkey. If this is your first time here, choose \"Create my profile\".",
+        { cause: e },
+      );
+    }
+    // Cache the discovered identifiers so the next visit is a fast, ceremony-free connect.
+    clearPasskeyRecord();
+    safeLocalSet(PK_KEYID, res.keyIdBase64);
+    safeLocalSet(PK_CONTRACT, res.contractId);
+  }
   keyId = res.keyIdBase64;
   const contractId = res.contractId;
 

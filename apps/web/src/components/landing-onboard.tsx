@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { useWallet } from '@/components/wallet/wallet-provider';
-import { normalizeHandle, type Profile } from '@/lib/profile';
+import { loadProfile, normalizeHandle, type Profile } from '@/lib/profile';
 import { humanizeError } from '@/lib/utils';
 import { track, identify, trackError } from '@/lib/track';
 import { useTranslations } from '@/lib/i18n';
@@ -24,10 +24,11 @@ import { Input } from '@/components/ui/input';
  */
 export function LandingOnboard() {
   const t = useTranslations();
-  const { profile, connect, setProfile } = useWallet();
+  const { profile, connect, restore, setProfile } = useWallet();
   const router = useRouter();
   const [handle, setHandle] = useState('');
   const [busy, setBusy] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [avail, setAvail] = useState<'idle' | 'checking' | 'free' | 'taken'>('idle');
 
   useEffect(() => {
@@ -70,7 +71,16 @@ export function LandingOnboard() {
         import('@/lib/genesis'),
         import('@/lib/registry'),
       ]);
-      const w = await connect();
+      // Explicit create — the only path that enrolls/deploys a new wallet.
+      const w = await connect({ mode: 'create' });
+      // If this address already holds a handle (a synced passkey the user forgot about),
+      // adopt it instead of renaming the account.
+      const existing = loadProfile();
+      if (existing && existing.address === w.address) {
+        toast.success(t('onboard.app.restoreSuccess', { handle: existing.handle }));
+        router.push('/app');
+        return;
+      }
       if (!(await isHandleAvailable(h))) {
         toast.error(t('onboard.landing.errTaken', { handle: h }));
         return;
@@ -89,6 +99,26 @@ export function LandingOnboard() {
       toast.error(humanizeError(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** "I already have an account": recover a synced passkey and its on-chain handle. */
+  async function restoreAccount() {
+    setRestoring(true);
+    try {
+      const p = await restore();
+      if (!p) {
+        toast.error(t('onboard.app.restoreNotFound'));
+        return;
+      }
+      toast.success(t('onboard.app.restoreSuccess', { handle: p.handle }));
+      router.push('/app');
+    } catch (e) {
+      console.error('🛑 landing restore failed →', e);
+      trackError(e, { flow: 'landing_restore' });
+      toast.error(humanizeError(e));
+    } finally {
+      setRestoring(false);
     }
   }
 
@@ -120,6 +150,16 @@ export function LandingOnboard() {
         {avail === 'taken' && <span className="text-destructive">{t('onboard.landing.handleTaken', { handle: normalizeHandle(handle) })}</span>}
         {avail === 'idle' && <span className="text-muted-foreground">{t('onboard.landing.pill')}</span>}
       </p>
+      <div className="mt-3 text-center">
+        <button
+          type="button"
+          onClick={() => void restoreAccount()}
+          disabled={busy || restoring}
+          className="text-sm font-medium text-primary hover:underline disabled:opacity-50"
+        >
+          {restoring ? t('onboard.app.restoring') : t('onboard.app.restore')}
+        </button>
+      </div>
     </form>
   );
 }

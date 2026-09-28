@@ -94,6 +94,11 @@
   "onboard.app.errShort": "Bir kullanıcı adı seç — 3 veya daha fazla harf ya da rakam.",
   "onboard.app.errTaken": "@{handle} alınmış — başka birini dene.",
   "onboard.app.success": "Profilin yayında — @{handle} zincire damgalandı.",
+  "onboard.app.or": "veya",
+  "onboard.app.restore": "Hesabım zaten var",
+  "onboard.app.restoring": "Hesabın aranıyor…",
+  "onboard.app.restoreSuccess": "Tekrar hoş geldin — @{handle}.",
+  "onboard.app.restoreNotFound": "Cüzdanını bulduk ama henüz bir kullanıcı adı yok. Bitirmek için bir tane seç.",
 
   "appHome.whatNow": "Ne yapılacak",
   "appHome.recentActivity": "Son aktivite",

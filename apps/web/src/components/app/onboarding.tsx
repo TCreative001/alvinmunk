@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { useWallet } from '@/components/wallet/wallet-provider';
 import { recordGenesis } from '@/lib/genesis';
 import { claimHandle, isHandleAvailable } from '@/lib/registry';
-import { normalizeHandle, type Profile } from '@/lib/profile';
+import { loadProfile, normalizeHandle, type Profile } from '@/lib/profile';
 import { humanizeError } from '@/lib/utils';
 import { track, identify, trackError } from '@/lib/track';
 import { useTranslations } from '@/lib/i18n';
@@ -18,9 +18,10 @@ import { Input } from '@/components/ui/input';
 
 export function Onboarding() {
   const t = useTranslations();
-  const { connect, setProfile } = useWallet();
+  const { connect, restore, setProfile } = useWallet();
   const [handle, setHandle] = useState('');
   const [creating, setCreating] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [face, setFace] = useState<FaceId | undefined>();
   const [avail, setAvail] = useState<'idle' | 'checking' | 'free' | 'taken'>('idle');
 
@@ -51,7 +52,16 @@ export function Onboarding() {
     }
     setCreating(true);
     try {
-      const w = await connect();
+      // Explicit create: this is the only path that enrolls/deploys a new wallet.
+      const w = await connect({ mode: 'create' });
+      // The connected address may already hold a handle on-chain (a synced passkey the user
+      // didn't realise they had). connect() adopted it into the local profile — never rename
+      // it; the /app layout will drop straight into the app instead.
+      const existing = loadProfile();
+      if (existing && existing.address === w.address) {
+        toast.success(t('onboard.app.restoreSuccess', { handle: existing.handle }));
+        return;
+      }
       if (!(await isHandleAvailable(h))) {
         toast.error(t('onboard.app.errTaken', { handle: h }));
         return;
@@ -75,6 +85,28 @@ export function Onboarding() {
       toast.error(humanizeError(e));
     } finally {
       setCreating(false);
+    }
+  }
+
+  /** "I already have an account": recover a synced passkey and its on-chain handle. */
+  async function restoreAccount() {
+    setRestoring(true);
+    try {
+      const p = await restore();
+      if (!p) {
+        toast.error(t('onboard.app.restoreNotFound'));
+        return;
+      }
+      identify(p.address, { handle: p.handle, walletKind: 'passkey' });
+      track('profile_restored', { handle: p.handle });
+      toast.success(t('onboard.app.restoreSuccess', { handle: p.handle }));
+      // The provider has the profile now — the layout swaps to the app on the next render.
+    } catch (e) {
+      console.error('🛑 restoreAccount failed →', e);
+      trackError(e, { flow: 'restore_profile' });
+      toast.error(humanizeError(e));
+    } finally {
+      setRestoring(false);
     }
   }
 
@@ -121,10 +153,25 @@ export function Onboarding() {
           {avail === 'free' && <span className="text-secondary">{t('onboard.app.handleFree', { handle: normalizeHandle(handle) })}</span>}
           {avail === 'taken' && <span className="text-destructive">{t('onboard.app.handleTaken', { handle: normalizeHandle(handle) })}</span>}
         </p>
-        <Button type="submit" size="lg" disabled={creating || avail === 'taken'} className="w-full">
+        <Button type="submit" size="lg" disabled={creating || restoring || avail === 'taken'} className="w-full">
           {creating ? t('onboard.app.submitting') : t('onboard.app.submit')}
         </Button>
       </form>
+
+      <div className="flex w-full items-center gap-3 text-xs text-muted-foreground">
+        <span className="h-px flex-1 bg-border" />
+        {t('onboard.app.or')}
+        <span className="h-px flex-1 bg-border" />
+      </div>
+
+      <button
+        type="button"
+        onClick={() => void restoreAccount()}
+        disabled={creating || restoring}
+        className="text-sm font-medium text-primary hover:underline disabled:opacity-50"
+      >
+        {restoring ? t('onboard.app.restoring') : t('onboard.app.restore')}
+      </button>
 
       <p className="text-center text-xs text-muted-foreground text-balance">
         {t('onboard.app.footer')}
