@@ -1,14 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { toast } from 'sonner';
-import { useWallet } from '@/components/wallet/wallet-provider';
-import { recordGenesis } from '@/lib/genesis';
-import { claimHandle, isHandleAvailable } from '@/lib/registry';
-import { normalizeHandle, type Profile } from '@/lib/profile';
-import { AccountNotFoundError, type Wallet } from '@/lib/wallet';
-import { humanizeError } from '@/lib/utils';
-import { track, identify, trackError } from '@/lib/track';
+import { useState } from 'react';
+import { useCreateProfile } from '@/hooks/use-create-profile';
+import { normalizeHandle } from '@/lib/profile';
 import { useTranslations } from '@/lib/i18n';
 import { Crest } from '@/components/brand/crest';
 import { AvatarPicker } from '@/components/AvatarPicker';
@@ -19,109 +13,11 @@ import { Input } from '@/components/ui/input';
 
 export function Onboarding() {
   const t = useTranslations();
-  const { connect, setProfile, restoreProfile } = useWallet();
-  const [handle, setHandle] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [restoring, setRestoring] = useState(false);
   const [face, setFace] = useState<FaceId | undefined>();
-  const [avail, setAvail] = useState<'idle' | 'checking' | 'free' | 'taken'>('idle');
-
-  useEffect(() => {
-    const h = normalizeHandle(handle);
-    if (h.length < 3) {
-      setAvail('idle');
-      return;
-    }
-    setAvail('checking');
-    let alive = true;
-    const timer = setTimeout(() => {
-      isHandleAvailable(h)
-        .then((free) => alive && setAvail(free ? 'free' : 'taken'))
-        .catch(() => alive && setAvail('idle'));
-    }, 400);
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-    };
-  }, [handle]);
-
-  async function createProfile() {
-    const h = normalizeHandle(handle);
-    if (h.length < 3) {
-      toast.error(t('onboard.app.errShort'));
-      return;
-    }
-    setCreating(true);
-    try {
-      const w = await connect('create');
-      // An address that already holds a handle keeps it (a returning user whose passkey synced
-      // here, or a wallet that claimed one elsewhere): claiming would RENAME it.
-      const held = await restoreProfile(w);
-      if (held) {
-        welcomeBack(w, held);
-        return;
-      }
-      if (!(await isHandleAvailable(h))) {
-        toast.error(t('onboard.app.errTaken', { handle: h }));
-        return;
-      }
-      const tx = w.kind === 'passkey' ? undefined : await recordGenesis(w, h);
-      await claimHandle(w, h);
-      const p: Profile = {
-        handle: h,
-        address: w.address,
-        createdAt: Date.now(),
-        genesisTx: tx,
-        avatar: face ? { kind: 'face', id: face } : undefined,
-      };
-      setProfile(p);
-      identify(w.address, { handle: h, walletKind: w.kind });
-      track('profile_created', { walletKind: w.kind });
-      toast.success(t('onboard.app.success', { handle: h }));
-    } catch (e) {
-      console.error('🛑 createProfile failed →', e);
-      trackError(e, { flow: 'create_profile' });
-      toast.error(humanizeError(e));
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  /**
-   * "I already have an account": pick an existing passkey (a synced one on a new phone, a
-   * second browser, after clearing site data) instead of enrolling a new one, and adopt the
-   * handle its account holds. Nothing is created when there is no such account.
-   */
-  async function restoreAccount() {
-    setRestoring(true);
-    try {
-      const w = await connect('recover');
-      const held = await restoreProfile(w);
-      // The account is there but never claimed a handle: it is connected now, so the form
-      // above finishes it on this same account.
-      if (!held) {
-        toast(t('onboard.app.restoreNoHandle'));
-        return;
-      }
-      welcomeBack(w, held);
-    } catch (e) {
-      if (e instanceof AccountNotFoundError) {
-        toast.error(t('onboard.app.restoreNotFound'));
-        return;
-      }
-      console.error('🛑 restoreAccount failed →', e);
-      trackError(e, { flow: 'restore_account' });
-      toast.error(humanizeError(e));
-    } finally {
-      setRestoring(false);
-    }
-  }
-
-  function welcomeBack(w: Wallet, p: Profile) {
-    identify(w.address, { handle: p.handle, walletKind: w.kind });
-    track('profile_restored', { walletKind: w.kind });
-    toast.success(t('onboard.app.restoreSuccess', { handle: p.handle }));
-  }
+  const { handle, setHandle, avail, creating, createProfile, restoring, restoreAccount } = useCreateProfile({
+    from: 'app',
+    face,
+  });
 
   return (
     <div className="relative container flex max-w-md flex-col items-center gap-8 py-20">
@@ -166,7 +62,7 @@ export function Onboarding() {
           {avail === 'free' && <span className="text-secondary">{t('onboard.app.handleFree', { handle: normalizeHandle(handle) })}</span>}
           {avail === 'taken' && <span className="text-destructive">{t('onboard.app.handleTaken', { handle: normalizeHandle(handle) })}</span>}
         </p>
-        <Button type="submit" size="lg" disabled={creating || restoring || avail === 'taken'} className="w-full">
+        <Button type="submit" size="lg" disabled={creating || restoring || avail === 'taken' } className="w-full">
           {creating ? t('onboard.app.submitting') : t('onboard.app.submit')}
         </Button>
       </form>

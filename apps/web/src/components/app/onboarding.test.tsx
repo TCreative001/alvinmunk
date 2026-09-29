@@ -159,7 +159,7 @@ describe('Onboarding — returning users (#278)', () => {
       expect(toastMock.error).toHaveBeenCalledWith(
         "Couldn't reach the network to check your wallet — try again in a moment.",
       );
-      expect(trackErrorMock).toHaveBeenCalledWith(expect.any(Error), { flow: 'restore_account' });
+      expect(trackErrorMock).toHaveBeenCalledWith(expect.any(Error), { flow: 'restore_account', from: 'app' });
     });
   });
 
@@ -171,7 +171,7 @@ describe('Onboarding — returning users (#278)', () => {
       await typeHandle('bob');
       await submit();
 
-      expect(connectMock).toHaveBeenCalledWith('create');
+      expect(connectMock).toHaveBeenCalledWith(); // create mode
       expect(claimHandleMock).not.toHaveBeenCalled();
       expect(recordGenesisMock).not.toHaveBeenCalled();
       expect(setProfileMock).not.toHaveBeenCalled();
