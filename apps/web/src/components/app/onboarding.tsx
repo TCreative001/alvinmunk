@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { useWallet } from '@/components/wallet/wallet-provider';
 import { recordGenesis } from '@/lib/genesis';
 import { claimHandle, isHandleAvailable } from '@/lib/registry';
-import { normalizeHandle, type Profile } from '@/lib/profile';
+import { loadProfile, normalizeHandle, type Profile } from '@/lib/profile';
 import { humanizeError } from '@/lib/utils';
 import { track, identify, trackError } from '@/lib/track';
 import { useTranslations } from '@/lib/i18n';
@@ -21,6 +21,7 @@ export function Onboarding() {
   const { connect, setProfile } = useWallet();
   const [handle, setHandle] = useState('');
   const [creating, setCreating] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [face, setFace] = useState<FaceId | undefined>();
   const [avail, setAvail] = useState<'idle' | 'checking' | 'free' | 'taken'>('idle');
 
@@ -51,7 +52,16 @@ export function Onboarding() {
     }
     setCreating(true);
     try {
-      const w = await connect();
+      const w = await connect('create');
+      // connect() adopts an existing on-chain handle for this address (a returning user on a
+      // new device, or a wallet that already holds one). Renaming it would erase their
+      // identity, so keep it and skip handle creation entirely.
+      const existing = loadProfile();
+      if (existing && existing.address === w.address) {
+        identify(w.address, { handle: existing.handle, walletKind: w.kind });
+        toast.success(t('onboard.app.restoreSuccess', { handle: existing.handle }));
+        return;
+      }
       if (!(await isHandleAvailable(h))) {
         toast.error(t('onboard.app.errTaken', { handle: h }));
         return;
@@ -75,6 +85,32 @@ export function Onboarding() {
       toast.error(humanizeError(e));
     } finally {
       setCreating(false);
+    }
+  }
+
+  /**
+   * "I already have an account": recover an existing (synced) passkey instead of enrolling a
+   * new one, then adopt the handle `connect` reads back from the registry. Used by returning
+   * users on a new phone, a second browser, or after clearing site data.
+   */
+  async function restoreAccount() {
+    setRestoring(true);
+    try {
+      const w = await connect('recover');
+      const restored = loadProfile();
+      if (!restored || restored.address !== w.address) {
+        toast.error(t('onboard.app.restoreNotFound'));
+        return;
+      }
+      identify(w.address, { handle: restored.handle, walletKind: w.kind });
+      track('profile_restored', { walletKind: w.kind });
+      toast.success(t('onboard.app.restoreSuccess', { handle: restored.handle }));
+    } catch (e) {
+      console.error('🛑 restoreAccount failed →', e);
+      trackError(e, { flow: 'restore_account' });
+      toast.error(humanizeError(e));
+    } finally {
+      setRestoring(false);
     }
   }
 
@@ -121,10 +157,23 @@ export function Onboarding() {
           {avail === 'free' && <span className="text-secondary">{t('onboard.app.handleFree', { handle: normalizeHandle(handle) })}</span>}
           {avail === 'taken' && <span className="text-destructive">{t('onboard.app.handleTaken', { handle: normalizeHandle(handle) })}</span>}
         </p>
-        <Button type="submit" size="lg" disabled={creating || avail === 'taken'} className="w-full">
+        <Button type="submit" size="lg" disabled={creating || restoring || avail === 'taken'} className="w-full">
           {creating ? t('onboard.app.submitting') : t('onboard.app.submit')}
         </Button>
       </form>
+
+      <div className="flex flex-col items-center gap-1.5">
+        <p className="text-xs text-muted-foreground">{t('onboard.app.or')}</p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={creating || restoring}
+          onClick={() => void restoreAccount()}
+        >
+          {restoring ? t('onboard.app.restoring') : t('onboard.app.restore')}
+        </Button>
+      </div>
 
       <p className="text-center text-xs text-muted-foreground text-balance">
         {t('onboard.app.footer')}

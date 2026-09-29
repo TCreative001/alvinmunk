@@ -38,6 +38,28 @@ export function clearProfile(): void {
   if (typeof localStorage !== 'undefined') localStorage.removeItem(KEY);
 }
 
+/**
+ * Rebuild a profile for a connected address whose handle already lives on-chain (a reverse
+ * lookup). The on-chain handle is authoritative (it survives a rename on another device),
+ * while the local avatar/bio/genesis are kept when they belong to the same address so a
+ * restore never loses a face the user just picked. `previous` defaults to the stored profile.
+ */
+export function restoreProfile(
+  address: string,
+  handle: string,
+  previous: Profile | null = loadProfile(),
+): Profile {
+  const same = previous && previous.address === address ? previous : null;
+  return {
+    handle,
+    address,
+    createdAt: same?.createdAt ?? Date.now(),
+    genesisTx: same?.genesisTx,
+    avatar: same?.avatar,
+    bio: same?.bio,
+  };
+}
+
 /** Normalize a user-typed handle: lowercase, alnum + underscore, <= 20 chars. */
 export function normalizeHandle(input: string): string {
   return input

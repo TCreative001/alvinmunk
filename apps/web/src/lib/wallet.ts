@@ -31,6 +31,17 @@ import { config, networkPassphrase, waitForAccountReady, server } from './stella
 
 export type WalletKind = 'passkey' | 'dev' | 'freighter' | 'albedo' | 'kit';
 
+/**
+ * How to establish a wallet:
+ *  - `create` (default): enroll a NEW passkey when none is cached — or resume a pending
+ *    deploy. Used by the "create a new account" flow.
+ *  - `recover`: when no credential is cached, run a WebAuthn assertion for ANY discoverable
+ *    (synced) passkey and re-derive its contract id, so a returning user on a new phone /
+ *    browser / cleared storage reaches the SAME account instead of silently getting a fresh
+ *    empty one. Never enrolls.
+ */
+export type ConnectMode = 'create' | 'recover';
+
 export interface Wallet {
   kind: WalletKind;
   address: string;
@@ -86,8 +97,8 @@ export function isPasskeyConfigured(): boolean {
 }
 
 /** Pick the right provider. Passkey when configured; dev otherwise (testnet only). */
-export async function getWallet(): Promise<Wallet> {
-  if (isPasskeyConfigured()) return connectPasskey();
+export async function getWallet(mode: ConnectMode = 'create'): Promise<Wallet> {
+  if (isPasskeyConfigured()) return connectPasskey(mode);
   return getDevWallet();
 }
 
@@ -443,7 +454,7 @@ function clearPasskeyRecord(): void {
   for (const k of [PK_PENDING, PK_KEYID, PK_PUBKEY, PK_CONTRACT]) safeLocalRemove(k);
 }
 
-export async function connectPasskey(): Promise<Wallet> {
+export async function connectPasskey(mode: ConnectMode = 'create'): Promise<Wallet> {
   const wasmHash = process.env.NEXT_PUBLIC_PASSKEY_WALLET_WASM_HASH;
   if (!wasmHash) {
     throw new Error(
@@ -488,6 +499,19 @@ export async function connectPasskey(): Promise<Wallet> {
   let keyId: string;
   if (storedKeyId) {
     keyId = storedKeyId;
+  } else if (mode === 'recover') {
+    // Returning user on a new device / fresh browser: no key id is cached here, but the
+    // passkey may be synced (iCloud Keychain / Google Password Manager). Asking connectWallet
+    // for a discoverable credential (no keyId) runs a WebAuthn assertion for any passkey this
+    // origin holds and re-derives the SAME contract id — no enrollment, no deploy. Cache the
+    // result so later connects (and invoke) work without the assertion.
+    const found = await kit.connectWallet({
+      getContractId: async () => safeLocalGet(PK_CONTRACT) ?? undefined,
+    });
+    keyId = found.keyIdBase64;
+    clearPasskeyRecord(); // drop any stale/pending record from an earlier attempt
+    safeLocalSet(PK_KEYID, keyId);
+    safeLocalSet(PK_CONTRACT, found.contractId);
   } else {
     // First run: enroll, then persist key id + public key + the pendingDeploy marker BEFORE we
     // submit anything, so any failure past this point is recoverable with the same passkey.

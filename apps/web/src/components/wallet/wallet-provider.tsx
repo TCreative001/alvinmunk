@@ -1,15 +1,15 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import type { Wallet } from '@/lib/wallet';
-import { loadProfile, saveProfile, clearProfile, type Profile } from '@/lib/profile';
+import type { Wallet, ConnectMode } from '@/lib/wallet';
+import { loadProfile, saveProfile, clearProfile, restoreProfile, type Profile } from '@/lib/profile';
 
 interface WalletContextValue {
   wallet: Wallet | null;
   profile: Profile | null;
   balance: string | null;
   connecting: boolean;
-  connect: () => Promise<Wallet>;
+  connect: (mode?: ConnectMode) => Promise<Wallet>;
   disconnect: () => void;
   setProfile: (p: Profile) => void;
   refreshBalance: () => void;
@@ -40,6 +40,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const setProfile = useCallback((p: Profile) => {
+    saveProfile(p);
+    setProfileState(p);
+  }, []);
+
   const refreshBalance = useCallback(() => {
     const addr = wallet?.address ?? profile?.address;
     if (!addr) return;
@@ -48,24 +53,26 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     );
   }, [wallet, profile]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (mode: ConnectMode = 'create') => {
     setConnecting(true);
     try {
       const { getWallet } = await import('@/lib/wallet');
       const { getXlmBalance } = await import('@/lib/stellar');
-      const w = await getWallet();
+      const w = await getWallet(mode);
       setWallet(w);
       setBalance(await getXlmBalance(w.address).catch(() => null));
+      // A connected address may already hold a handle on-chain even though this browser has
+      // no local profile (new device, cleared data, second browser). Adopt it so the user
+      // never sees the create-handle form and keeps their reputation. Public read; a registry
+      // that is unconfigured/unreachable resolves null and leaves any local profile alone.
+      const { reverseHandle } = await import('@/lib/registry');
+      const handle = await reverseHandle(w.address).catch(() => null);
+      if (handle) setProfile(restoreProfile(w.address, handle));
       return w;
     } finally {
       setConnecting(false);
     }
-  }, []);
-
-  const setProfile = useCallback((p: Profile) => {
-    saveProfile(p);
-    setProfileState(p);
-  }, []);
+  }, [setProfile]);
 
   const disconnect = useCallback(() => {
     clearProfile();

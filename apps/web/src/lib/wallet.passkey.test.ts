@@ -417,3 +417,63 @@ describe('connectPasskey deploy resilience (#186)', () => {
     });
   });
 });
+
+describe('connectPasskey — recover an existing account', () => {
+  /**
+   * The kit's recovery path: `connectWallet()` with no keyId runs a WebAuthn assertion for a
+   * discoverable (synced) credential and returns its key id + derived contract id. The shared
+   * tail then calls it again WITH the key id, so the mock answers both shapes.
+   */
+  function withDiscovery(contractId = CONTRACT_ID) {
+    mocks.connectWallet.mockImplementation(
+      async (opts: { keyId?: string; getContractId: () => Promise<string | undefined> }) => {
+        if (!opts.keyId) {
+          return { keyIdBase64: KEY_ID, keyId: Buffer.from(KEY_ID, 'base64url'), contractId };
+        }
+        return { keyIdBase64: opts.keyId, contractId: (await opts.getContractId()) ?? contractId };
+      },
+    );
+  }
+
+  it('finds a synced passkey on a fresh browser and caches its ids — no enrollment, no deploy', async () => {
+    withDiscovery();
+
+    const wallet = await connectPasskey('recover');
+
+    // No cached key id, yet the wallet is recovered from the discoverable credential.
+    expect(mocks.createKey).not.toHaveBeenCalled();
+    expect(mocks.deploy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    // First connectWallet call has NO keyId (the discoverable assertion); the tail re-derives.
+    expect(mocks.connectWallet.mock.calls[0][0]).not.toHaveProperty('keyId');
+    expect(mocks.connectWallet).toHaveBeenCalledWith(expect.objectContaining({ keyId: KEY_ID }));
+    expect(wallet.kind).toBe('passkey');
+    expect(wallet.address).toBe(CONTRACT_ID);
+    // The recovered ids are cached so the next visit is a silent restore.
+    expect(stored()).toEqual({ [KEYID_KEY]: KEY_ID, [CONTRACT_KEY]: CONTRACT_ID });
+  });
+
+  it('reuses a cached key id without asking for a discoverable credential', async () => {
+    localStorage.setItem(KEYID_KEY, KEY_ID);
+    localStorage.setItem(CONTRACT_KEY, CONTRACT_ID);
+
+    const wallet = await connectPasskey('recover');
+
+    expect(mocks.connectWallet).toHaveBeenCalledTimes(1);
+    expect(mocks.connectWallet).toHaveBeenCalledWith(expect.objectContaining({ keyId: KEY_ID }));
+    expect(mocks.createKey).not.toHaveBeenCalled();
+    expect(mocks.deploy).not.toHaveBeenCalled();
+    expect(wallet.address).toBe(CONTRACT_ID);
+  });
+
+  it('discards a stale contract id and adopts the discovered wallet', async () => {
+    // A leftover contract id from an unrelated earlier record must not be mistaken for this passkey.
+    localStorage.setItem(CONTRACT_KEY, OTHER_CONTRACT_ID);
+    withDiscovery();
+
+    const wallet = await connectPasskey('recover');
+
+    expect(wallet.address).toBe(CONTRACT_ID);
+    expect(stored()).toEqual({ [KEYID_KEY]: KEY_ID, [CONTRACT_KEY]: CONTRACT_ID });
+  });
+});
