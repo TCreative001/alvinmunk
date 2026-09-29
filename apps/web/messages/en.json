@@ -78,6 +78,7 @@
   "onboard.landing.errShort": "Pick a handle — 3+ letters or numbers.",
   "onboard.landing.errTaken": "@{handle} is taken — pick another.",
   "onboard.landing.success": "You're in — @{handle} stamped on-chain.",
+  "onboard.landing.restored": "Welcome back — @{handle} restored.",
 
   "onboard.app.eyebrow": "Step 1 of 1",
   "onboard.app.title": "Create your profile",
@@ -98,6 +99,7 @@
   "onboard.app.restore": "I already have an account",
   "onboard.app.restoring": "Looking for your account…",
   "onboard.app.restoreNotFound": "No account found for that passkey — create a new one, or use the device where you first signed up.",
+  "onboard.app.restoreNoHandle": "Found your account — it has no handle yet. Pick one above to finish.",
   "onboard.app.restoreSuccess": "Welcome back — @{handle} restored.",
 
   "appHome.whatNow": "What now",

@@ -24,24 +24,19 @@ import { clearProfile, loadProfile, saveProfile } from '@/lib/profile';
 
 const WALLET = { kind: 'passkey', address: 'CACCOUNT' } as unknown as Wallet;
 
-/** A tiny consumer that drives `connect` and exposes the resulting profile for assertions. */
-function Probe() {
-  const { connect, profile, wallet } = useWallet();
-  const [mode, setMode] = React.useState<string | null>(null);
-  return (
-    <div>
-      <button aria-label="recover" onClick={() => void connect('recover').then(() => setMode('recover'))} />
-      <button aria-label="create" onClick={() => void connect().then(() => setMode('create'))} />
-      <span data-testid="handle">{profile?.handle ?? ''}</span>
-      <span data-testid="address">{wallet?.address ?? ''}</span>
-      <span data-testid="mode">{mode ?? ''}</span>
-    </div>
-  );
-}
+/** Reverse-lookup failure as the RPC reports it. */
+const RPC_DOWN = new Error('simulate reverse failed: 503');
 
-describe('WalletProvider connect-time restore', () => {
+describe('WalletProvider — adopting the handle an address already holds (#278)', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let ctx: ReturnType<typeof useWallet>;
+
+  /** Exposes the context and renders the profile the app would see. */
+  function Probe() {
+    ctx = useWallet();
+    return <span data-testid="handle">{ctx.profile?.handle ?? ''}</span>;
+  }
 
   beforeEach(() => {
     clearProfile();
@@ -58,101 +53,100 @@ describe('WalletProvider connect-time restore', () => {
     container.remove();
   });
 
-  async function flush() {
-    await act(async () => {
-      for (let i = 0; i < 8; i++) await Promise.resolve();
-    });
-  }
-
   async function mount() {
     await act(async () => root.render(<WalletProvider><Probe /></WalletProvider>));
-    await flush();
   }
 
-  async function click(label: string) {
-    const el = container.querySelector<HTMLElement>(`[aria-label="${label}"]`)!;
-    await act(async () => el.click());
-    await flush();
+  /** Run `fn` against the live context and let React commit what it set. */
+  async function run<T>(fn: () => Promise<T>): Promise<T> {
+    let out!: T;
+    await act(async () => {
+      out = await fn();
+    });
+    return out;
   }
 
-  const text = (id: string) => container.querySelector(`[data-testid="${id}"]`)!.textContent;
+  const shown = () => container.querySelector('[data-testid="handle"]')!.textContent;
 
-  it('passes the recover mode through to getWallet', async () => {
+  it('hands the connect mode to getWallet (create by default)', async () => {
     await mount();
-    await click('recover');
-    expect(getWalletMock).toHaveBeenCalledWith('recover');
+    await run(() => ctx.connect('recover'));
+    await run(() => ctx.connect());
+    expect(getWalletMock.mock.calls).toEqual([['recover'], ['create']]);
   });
 
-  it('rebuilds the profile when the connected address already holds a handle', async () => {
+  it('adopts the on-chain handle when this browser has no profile for the address', async () => {
     reverseHandleMock.mockResolvedValue('alvin');
     await mount();
 
-    await click('recover');
+    await run(() => ctx.connect('recover'));
 
-    expect(reverseHandleMock).toHaveBeenCalledWith('CACCOUNT');
-    expect(text('handle')).toBe('alvin');
-    expect(text('address')).toBe('CACCOUNT');
-    expect(loadProfile()).toMatchObject({ handle: 'alvin', address: 'CACCOUNT' });
+    // A strict read: a failure must not pass for "no handle".
+    expect(reverseHandleMock).toHaveBeenCalledWith('CACCOUNT', { strict: true });
+    expect(shown()).toBe('alvin');
+    expect(loadProfile()).toEqual({ handle: 'alvin', address: 'CACCOUNT', createdAt: expect.any(Number) });
   });
 
-  it('keeps the local face and bio when restoring the same address', async () => {
-    saveProfile({
-      handle: 'old',
-      address: 'CACCOUNT',
-      createdAt: 123,
-      avatar: { kind: 'face', id: 'face-01' },
-      bio: 'ship it',
-    });
+  it("replaces another address's profile with the connected address's handle", async () => {
+    saveProfile({ handle: 'someone', address: 'GOTHER', createdAt: 1, bio: 'not mine' });
     reverseHandleMock.mockResolvedValue('alvin');
     await mount();
 
-    await click('recover');
+    await run(() => ctx.connect());
 
-    expect(loadProfile()).toMatchObject({
-      handle: 'alvin',
-      address: 'CACCOUNT',
-      createdAt: 123,
-      avatar: { kind: 'face', id: 'face-01' },
-      bio: 'ship it',
-    });
+    expect(loadProfile()).toEqual({ handle: 'alvin', address: 'CACCOUNT', createdAt: expect.any(Number) });
   });
 
-  it('leaves the profile untouched when the address has no on-chain handle', async () => {
-    reverseHandleMock.mockResolvedValue(null);
+  it('keeps a profile that already belongs to the address, without a registry read', async () => {
+    const mine: Profile = { handle: 'alvin', address: 'CACCOUNT', createdAt: 123, bio: 'ship it' };
+    saveProfile(mine);
     await mount();
 
-    await click('recover');
+    await run(() => ctx.connect());
 
-    expect(text('handle')).toBe('');
+    expect(reverseHandleMock).not.toHaveBeenCalled();
+    expect(loadProfile()).toEqual(mine);
+  });
+
+  it('leaves the profile empty when the address holds no handle', async () => {
+    await mount();
+
+    await expect(run(() => ctx.connect('recover'))).resolves.toBe(WALLET);
+
+    expect(shown()).toBe('');
     expect(loadProfile()).toBeNull();
   });
 
-  it('ignores a profile from a different address', async () => {
-    const stale: Profile = { handle: 'someone', address: 'GOTHER', createdAt: 1 };
-    saveProfile(stale);
-    reverseHandleMock.mockResolvedValue('alvin');
+  it('still connects when the registry read fails, and changes nothing', async () => {
+    reverseHandleMock.mockRejectedValue(RPC_DOWN);
     await mount();
 
-    await click('create');
+    await expect(run(() => ctx.connect('recover'))).resolves.toBe(WALLET);
 
-    // The stale local handle drops its fields; the connected address wins with the chain handle.
-    expect(loadProfile()).toEqual({
-      handle: 'alvin',
-      address: 'CACCOUNT',
-      createdAt: expect.any(Number),
-      genesisTx: undefined,
-      avatar: undefined,
-      bio: undefined,
-    });
+    expect(ctx.wallet).toBe(WALLET);
+    expect(loadProfile()).toBeNull();
   });
 
-  it('tolerates a registry read that fails', async () => {
-    reverseHandleMock.mockRejectedValue(new Error('registry down'));
-    await mount();
+  describe('restoreProfile', () => {
+    it('returns the adopted profile, or null when the address holds no handle', async () => {
+      await mount();
+      await expect(run(() => ctx.restoreProfile(WALLET))).resolves.toBeNull();
 
-    await click('recover');
+      reverseHandleMock.mockResolvedValue('alvin');
+      await expect(run(() => ctx.restoreProfile(WALLET))).resolves.toMatchObject({ handle: 'alvin' });
+      expect(shown()).toBe('alvin');
+    });
 
-    expect(text('handle')).toBe('');
-    expect(text('mode')).toBe('recover');
+    it('throws when the registry cannot be read, so no caller claims on a guess', async () => {
+      reverseHandleMock.mockRejectedValue(RPC_DOWN);
+      await mount();
+
+      const err = await run(() => ctx.restoreProfile(WALLET).catch((e: unknown) => e));
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe("Couldn't look up your handle — try again in a moment.");
+      expect((err as Error).cause).toBe(RPC_DOWN);
+      expect(loadProfile()).toBeNull();
+    });
   });
 });

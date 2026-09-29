@@ -5,7 +5,8 @@ import { toast } from 'sonner';
 import { useWallet } from '@/components/wallet/wallet-provider';
 import { recordGenesis } from '@/lib/genesis';
 import { claimHandle, isHandleAvailable } from '@/lib/registry';
-import { loadProfile, normalizeHandle, type Profile } from '@/lib/profile';
+import { normalizeHandle, type Profile } from '@/lib/profile';
+import { AccountNotFoundError, type Wallet } from '@/lib/wallet';
 import { humanizeError } from '@/lib/utils';
 import { track, identify, trackError } from '@/lib/track';
 import { useTranslations } from '@/lib/i18n';
@@ -18,7 +19,7 @@ import { Input } from '@/components/ui/input';
 
 export function Onboarding() {
   const t = useTranslations();
-  const { connect, setProfile } = useWallet();
+  const { connect, setProfile, restoreProfile } = useWallet();
   const [handle, setHandle] = useState('');
   const [creating, setCreating] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -53,13 +54,11 @@ export function Onboarding() {
     setCreating(true);
     try {
       const w = await connect('create');
-      // connect() adopts an existing on-chain handle for this address (a returning user on a
-      // new device, or a wallet that already holds one). Renaming it would erase their
-      // identity, so keep it and skip handle creation entirely.
-      const existing = loadProfile();
-      if (existing && existing.address === w.address) {
-        identify(w.address, { handle: existing.handle, walletKind: w.kind });
-        toast.success(t('onboard.app.restoreSuccess', { handle: existing.handle }));
+      // An address that already holds a handle keeps it (a returning user whose passkey synced
+      // here, or a wallet that claimed one elsewhere): claiming would RENAME it.
+      const held = await restoreProfile(w);
+      if (held) {
+        welcomeBack(w, held);
         return;
       }
       if (!(await isHandleAvailable(h))) {
@@ -89,29 +88,39 @@ export function Onboarding() {
   }
 
   /**
-   * "I already have an account": recover an existing (synced) passkey instead of enrolling a
-   * new one, then adopt the handle `connect` reads back from the registry. Used by returning
-   * users on a new phone, a second browser, or after clearing site data.
+   * "I already have an account": pick an existing passkey (a synced one on a new phone, a
+   * second browser, after clearing site data) instead of enrolling a new one, and adopt the
+   * handle its account holds. Nothing is created when there is no such account.
    */
   async function restoreAccount() {
     setRestoring(true);
     try {
       const w = await connect('recover');
-      const restored = loadProfile();
-      if (!restored || restored.address !== w.address) {
+      const held = await restoreProfile(w);
+      // The account is there but never claimed a handle: it is connected now, so the form
+      // above finishes it on this same account.
+      if (!held) {
+        toast(t('onboard.app.restoreNoHandle'));
+        return;
+      }
+      welcomeBack(w, held);
+    } catch (e) {
+      if (e instanceof AccountNotFoundError) {
         toast.error(t('onboard.app.restoreNotFound'));
         return;
       }
-      identify(w.address, { handle: restored.handle, walletKind: w.kind });
-      track('profile_restored', { walletKind: w.kind });
-      toast.success(t('onboard.app.restoreSuccess', { handle: restored.handle }));
-    } catch (e) {
       console.error('🛑 restoreAccount failed →', e);
       trackError(e, { flow: 'restore_account' });
       toast.error(humanizeError(e));
     } finally {
       setRestoring(false);
     }
+  }
+
+  function welcomeBack(w: Wallet, p: Profile) {
+    identify(w.address, { handle: p.handle, walletKind: w.kind });
+    track('profile_restored', { walletKind: w.kind });
+    toast.success(t('onboard.app.restoreSuccess', { handle: p.handle }));
   }
 
   return (

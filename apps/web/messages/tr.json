@@ -78,6 +78,7 @@
   "onboard.landing.errShort": "Bir kullanıcı adı seç — 3 veya daha fazla harf ya da rakam.",
   "onboard.landing.errTaken": "@{handle} alınmış — başka birini dene.",
   "onboard.landing.success": "İçerisindesin — @{handle} zincire damgalandı.",
+  "onboard.landing.restored": "Tekrar hoş geldin — @{handle} geri yüklendi.",
 
   "onboard.app.eyebrow": "Adım 1 / 1",
   "onboard.app.title": "Profilini oluştur",
@@ -98,6 +99,7 @@
   "onboard.app.restore": "Hesabım zaten var",
   "onboard.app.restoring": "Hesabın aranıyor…",
   "onboard.app.restoreNotFound": "Bu geçiş anahtarı için hesap bulunamadı — yeni bir hesap oluştur veya ilk kaydolduğun cihazı kullan.",
+  "onboard.app.restoreNoHandle": "Hesabın bulundu — henüz bir kullanıcı adı yok. Bitirmek için yukarıdan birini seç.",
   "onboard.app.restoreSuccess": "Tekrar hoş geldin — @{handle} geri yüklendi.",
 
   "appHome.whatNow": "Ne yapılacak",

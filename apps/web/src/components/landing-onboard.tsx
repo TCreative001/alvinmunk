@@ -24,7 +24,7 @@ import { Input } from '@/components/ui/input';
  */
 export function LandingOnboard() {
   const t = useTranslations();
-  const { profile, connect, setProfile } = useWallet();
+  const { profile, connect, setProfile, restoreProfile } = useWallet();
   const router = useRouter();
   const [handle, setHandle] = useState('');
   const [busy, setBusy] = useState(false);
@@ -71,6 +71,15 @@ export function LandingOnboard() {
         import('@/lib/registry'),
       ]);
       const w = await connect();
+      // An address that already holds a handle keeps it: claiming would RENAME it.
+      const held = await restoreProfile(w);
+      if (held) {
+        identify(w.address, { handle: held.handle, walletKind: w.kind });
+        track('profile_restored', { walletKind: w.kind, from: 'landing' });
+        toast.success(t('onboard.landing.restored', { handle: held.handle }));
+        router.push('/app');
+        return;
+      }
       if (!(await isHandleAvailable(h))) {
         toast.error(t('onboard.landing.errTaken', { handle: h }));
         return;
